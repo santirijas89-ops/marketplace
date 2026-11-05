@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "TuMarketplace"
+description = "Marketplace local para descubrir, publicar y gestionar productos de segunda mano por municipio, con contacto directo por WhatsApp y herramientas de administración."
+version = "1.0.0"
+id = "artifacts/tu-marketplace"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18281
+
+[services.development]
+run = "pnpm --filter @workspace/tu-marketplace run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/tu-marketplace", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/tu-marketplace/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18281"
+BASE_PATH = "/"
