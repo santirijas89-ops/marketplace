@@ -73,11 +73,17 @@ async function fetchListings(params?: { category?: string; q?: string; location?
   if (params?.category && params.category !== 'Todo' && params.category !== 'Todas') {
     query = query.eq('category', params.category);
   }
-  if (params?.location && params.location !== 'Toda Bogotá') {
+  
+  // CORRECCIÓN AQUÍ: Ignorar el filtro si está seleccionado 'Todo Puerto Boyacá'
+  if (
+    params?.location &&
+    params.location !== 'Todo Puerto Boyacá' &&
+    params.location !== 'Toda Bogotá'
+  ) {
     query = query.ilike('location', `%${params.location}%`);
   }
-  if (params?.q) {
-    query = query.or(`title.ilike.%${params.q}%,description.ilike.%${params.q}%`);
+  if (params?.q && params.q.trim() !== '') {
+    query = query.or(`title.ilike.%${params.q.trim()}%,description.ilike.%${params.q.trim()}%`);
   }
 
   if (params?.sort === 'price-low') {
@@ -228,14 +234,14 @@ function StateMessage({ title, body, onRetry }: { title: string; body: string; o
 
 function Brand() {
   return (
-    <Link href="/" className="group flex items-center gap-2.5">
-      <span className="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-accent text-primary">
-        <span className="absolute -right-2 -top-2 h-6 w-6 rounded-full border-4 border-primary/20 bg-white/20" />
-        <span className="font-mono text-lg font-bold">tu</span>
-      </span>
-      <span className="text-lg font-bold tracking-tight text-primary">
-        Tu<span className="text-secondary">Marketplace</span>
-      </span>
+    <Link href="/" className="group flex items-center">
+      <div className="flex h-10 items-center overflow-visible">
+        <img
+          src="/logo-revo.png"
+          alt="REVO Mercado Local"
+          className="h-16 w-auto max-w-none origin-left scale-125 object-contain transition duration-200 group-hover:scale-[1.32] sm:h-20"
+        />
+      </div>
     </Link>
   );
 }
@@ -425,7 +431,7 @@ function AppShell({ children, currentUser, onLogout }: { children: React.ReactNo
         <div className="mx-auto flex max-w-[1440px] flex-col gap-4 px-4 py-8 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-10">
           <Brand />
           <span>El barrio encuentra lo que necesita.</span>
-          <span className="font-mono text-xs">TU / 2026</span>
+          <span className="font-mono text-xs">REVO / 2026</span>
         </div>
       </footer>
     </div>
@@ -450,7 +456,7 @@ function SearchBar({ initialValue = '', onSubmit, large = false }: { initialValu
         value={value}
         onChange={(event) => setValue(event.target.value)}
         placeholder="¿Qué estás buscando hoy?"
-        className="min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-muted-foreground"
+        className="min-w-0 flex-1 bg-transparent px-2 py-2 text-sm text-primary outline-none placeholder:text-muted-foreground"
       />
       <button
         type="submit"
@@ -933,6 +939,40 @@ function DetailPage() {
 function PublishPage({ currentUser }: { currentUser: any }) {
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
+
+  // BLOQUEO DE SEGURIDAD PARA USUARIOS NO AUTENTICADOS
+  if (!currentUser) {
+    return (
+      <div className="mx-auto max-w-md py-16 text-center animate-fade">
+        <div className="rounded-3xl border bg-card p-8 shadow-soft">
+          <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent/20 text-primary">
+            <ShieldCheck size={28} />
+          </div>
+          <p className="text-xs font-bold uppercase tracking-widest text-secondary">Acceso requerido</p>
+          <h1 className="mt-2 text-2xl font-bold text-primary">Inicia sesión para publicar</h1>
+          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+            Para proteger a los vecinos de Puerto Boyacá y asociar el aviso a tu perfil, necesitas ingresar a tu cuenta de REVO.
+          </p>
+
+          <div className="mt-7 flex flex-col gap-3">
+            <Link
+              href="/login"
+              className="flex w-full items-center justify-center rounded-xl bg-primary px-4 py-3.5 text-sm font-bold text-primary-foreground transition hover:-translate-y-0.5"
+            >
+              Ingresar a mi cuenta
+            </Link>
+            <Link
+              href="/registro"
+              className="flex w-full items-center justify-center rounded-xl border border-primary/20 px-4 py-3 text-sm font-bold text-primary hover:bg-muted"
+            >
+              Crear cuenta gratis
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const [form, setForm] = useState({
     title: '',
     category: 'Hogar',
@@ -1176,6 +1216,19 @@ function AuthCard({ register = false }: { register?: boolean }) {
     }
   };
 
+  const loginWithGoogle = async () => {
+    setError('');
+    const { error: oauthError } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: window.location.origin,
+      },
+    });
+    if (oauthError) {
+      setError(oauthError.message);
+    }
+  };
+
   return (
     <div className="grid min-h-[calc(100dvh-180px)] items-center py-10 lg:grid-cols-2 lg:gap-20">
       <div className="hidden lg:block">
@@ -1187,14 +1240,14 @@ function AuthCard({ register = false }: { register?: boolean }) {
           {register ? 'Tu comunidad empieza aquí.' : 'Comprar cerca se siente mejor.'}
         </h1>
         <p className="mt-5 max-w-md text-lg leading-relaxed text-muted-foreground">
-          Publica lo que ya no usas, descubre tesoros cerca de ti y conecta con personas de tu zona.
+          Publica lo que ya no usas, descubre tesoros cerca de ti y conecta con personas de Puerto Boyacá.
         </p>
       </div>
 
       <div className="mx-auto w-full max-w-md">
         <div className="rounded-3xl border bg-card p-6 shadow-soft sm:p-9">
           <p className="text-xs sm:text-sm font-semibold text-secondary">
-            {register ? 'Únete a TuMarketplace' : 'Tu cuenta'}
+            {register ? 'Únete a REVO' : 'Tu cuenta'}
           </p>
           <h2 className="mt-2 text-2xl sm:text-3xl font-bold tracking-tight text-primary">
             {register ? 'Crea tu cuenta' : 'Ingresa a tu cuenta'}
@@ -1210,7 +1263,7 @@ function AuthCard({ register = false }: { register?: boolean }) {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Ej. Camila Rojas"
-                  className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm outline-none focus:border-secondary"
+                  className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm text-primary outline-none focus:border-secondary"
                 />
               </label>
             )}
@@ -1222,7 +1275,7 @@ function AuthCard({ register = false }: { register?: boolean }) {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="tu@correo.com"
-                className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm outline-none focus:border-secondary"
+                className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm text-primary outline-none focus:border-secondary"
               />
             </label>
             <label className="block text-xs sm:text-sm font-semibold text-primary">
@@ -1234,7 +1287,7 @@ function AuthCard({ register = false }: { register?: boolean }) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Mínimo 6 caracteres"
-                className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm outline-none focus:border-secondary"
+                className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm text-primary outline-none focus:border-secondary"
               />
             </label>
             {register && (
@@ -1247,7 +1300,7 @@ function AuthCard({ register = false }: { register?: boolean }) {
                   value={passwordConfirm}
                   onChange={(e) => setPasswordConfirm(e.target.value)}
                   placeholder="Repite la contraseña"
-                  className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm outline-none focus:border-secondary"
+                  className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm text-primary outline-none focus:border-secondary"
                 />
               </label>
             )}
@@ -1262,6 +1315,38 @@ function AuthCard({ register = false }: { register?: boolean }) {
               {register ? 'Crear cuenta' : 'Ingresar'}
             </button>
           </form>
+
+          <div className="my-5 flex items-center gap-3">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-xs font-semibold uppercase text-muted-foreground">o continúa con</span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
+
+          <button
+            type="button"
+            onClick={loginWithGoogle}
+            className="flex w-full items-center justify-center gap-2.5 rounded-xl border bg-background px-4 py-3 text-sm font-bold text-primary transition hover:bg-muted"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24">
+              <path
+                fill="#4285F4"
+                d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
+              />
+              <path
+                fill="#34A853"
+                d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
+              />
+              <path
+                fill="#EA4335"
+                d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
+              />
+            </svg>
+            Continuar con Google
+          </button>
 
           <p className="mt-6 text-center text-xs sm:text-sm text-muted-foreground">
             {register ? '¿Ya tienes cuenta? ' : '¿Aún no tienes cuenta? '}
