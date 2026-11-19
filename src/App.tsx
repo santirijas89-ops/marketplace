@@ -175,6 +175,31 @@ async function createListingInDb(form: any, user: any): Promise<Listing> {
   return fetchListingById(data.id);
 }
 
+async function uploadListingImages(files: File[], userId: string): Promise<string[]> {
+  const uploadedUrls: string[] = [];
+
+  for (const file of files) {
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${userId}/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${fileExt}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('listings-images')
+      .upload(fileName, file, { cacheControl: '3600', upsert: false });
+
+    if (uploadError) {
+      throw new Error(`Error al subir ${file.name}: ${uploadError.message}`);
+    }
+
+    const { data } = supabase.storage
+      .from('listings-images')
+      .getPublicUrl(fileName);
+
+    uploadedUrls.push(data.publicUrl);
+  }
+
+  return uploadedUrls;
+}
+
 // --- UTILIDADES ---
 
 function initials(name = 'Tu') {
@@ -318,8 +343,18 @@ function AppShell({ children, currentUser, onLogout }: { children: React.ReactNo
                       </p>
                       <p className="truncate text-xs text-muted-foreground">{currentUser.email}</p>
                     </div>
+
+                    <Link
+                      href={`/vendedor/${currentUser.id}`}
+                      onClick={() => setUserDropdown(false)}
+                      className="mt-2 flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-semibold text-primary hover:bg-muted"
+                    >
+                      <UserRound size={16} />
+                      Mi perfil y avisos
+                    </Link>
+
                     <button
-                      className="mt-2 flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                      className="mt-1 flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
                       onClick={() => {
                         setUserDropdown(false);
                         onLogout();
@@ -391,6 +426,14 @@ function AppShell({ children, currentUser, onLogout }: { children: React.ReactNo
                     </p>
                     <p className="text-xs text-muted-foreground">{currentUser.email}</p>
                   </div>
+                  <Link
+                    href={`/vendedor/${currentUser.id}`}
+                    onClick={() => setMenuOpen(false)}
+                    className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-primary hover:bg-muted"
+                  >
+                    <UserRound size={17} />
+                    Mi perfil y avisos
+                  </Link>
                   <button
                     onClick={() => {
                       setMenuOpen(false);
@@ -805,22 +848,46 @@ function SearchPage() {
 
 // --- DETALLE DEL PRODUCTO ---
 
-function DetailPage() {
+function DetailPage({ currentUser }: { currentUser: any }) {
   const { id = '' } = useParams<{ id: string }>();
+  const queryClient = useQueryClient();
   const [activeImage, setActiveImage] = useState(0);
+  const [updatingStatus, setUpdatingStatus] = useState(false);
 
-  const { data: listing, isLoading, isError } = useQuery({
+  const { data: listing, isLoading, isError, refetch } = useQuery({
     queryKey: ['listing', id],
     queryFn: () => fetchListingById(id),
     enabled: Boolean(id),
   });
 
+  const handleMarkAsSold = async () => {
+    if (!listing) return;
+    setUpdatingStatus(true);
+    try {
+      const { error } = await supabase
+        .from('listings')
+        .update({ status: 'sold' })
+        .eq('id', listing.id);
+
+      if (error) throw error;
+
+      // Actualiza tanto el detalle como el catálogo principal
+      await queryClient.invalidateQueries({ queryKey: ['listings'] });
+      await refetch();
+    } catch (err) {
+      console.error('Error al actualizar estado:', err);
+    } finally {
+      setUpdatingStatus(false);
+    }
+  };
+
   if (isLoading)
     return (
       <div className="py-12">
-        <div className="aspect-[4/3] w-full max-w-4xl mx-auto rounded-3xl bg-muted animate-pulse" />
+        <div className="mx-auto aspect-[4/3] w-full max-w-4xl rounded-3xl bg-muted animate-pulse" />
       </div>
     );
+
   if (isError || !listing)
     return (
       <div className="py-16">
@@ -831,28 +898,55 @@ function DetailPage() {
       </div>
     );
 
-  const images = [listing.image, ...(listing.gallery ?? [])].filter(Boolean);
+  const isOwner = currentUser?.id === listing.seller.id;
+  const isSold = listing.status === 'sold';
+  const images =
+    listing.gallery && listing.gallery.length > 0
+      ? listing.gallery
+      : [listing.image].filter(Boolean);
+
   const whatsappUrl = listing.seller.phone
-    ? `https://wa.me/${listing.seller.phone}?text=${encodeURIComponent(`Hola, me interesa tu publicación: ${listing.title}`)}`
+    ? `https://wa.me/${listing.seller.phone}?text=${encodeURIComponent(
+        `Hola, me interesa tu publicación: ${listing.title}`
+      )}`
     : '#';
+
   const whatsappDisplay = listing.seller.phone
-    ? `+57 ${listing.seller.phone.replace(/\D/g, '').replace(/^57/, '').replace(/(\d{3})(\d{3})(\d{4})/, '$1 $2 $3')}`
+    ? `+57 ${listing.seller.phone
+        .replace(/\D/g, '')
+        .replace(/^57/, '')
+        .replace(/(\d{3})(\d{3})(\d{4})/, '$1 $2 $3')}`
     : '';
 
   return (
     <div className="py-6 sm:py-8 animate-fade">
-      <Link href="/buscar" className="mb-5 inline-flex items-center gap-1 text-sm font-semibold text-muted-foreground hover:text-primary">
+      <Link
+        href="/buscar"
+        className="mb-5 inline-flex items-center gap-1 text-sm font-semibold text-muted-foreground hover:text-primary"
+      >
         ← Volver a explorar
       </Link>
+
       <div className="grid gap-8 lg:grid-cols-[1.1fr_.9fr]">
+        {/* GALERÍA */}
         <div>
-          <div className="overflow-hidden rounded-3xl border bg-muted">
+          <div className="relative overflow-hidden rounded-3xl border bg-muted">
             <img
               src={images[activeImage] || placeholderImage}
               alt={listing.title}
-              className="aspect-[4/3] w-full object-cover lg:aspect-[1.15/1]"
+              className={`aspect-[4/3] w-full object-cover lg:aspect-[1.15/1] ${
+                isSold ? 'opacity-60 grayscale' : ''
+              }`}
             />
+            {isSold && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                <span className="rounded-2xl bg-destructive px-6 py-2.5 text-lg font-extrabold uppercase tracking-widest text-white shadow-lg">
+                  Producto Vendido
+                </span>
+              </div>
+            )}
           </div>
+
           {images.length > 1 && (
             <div className="mt-3 flex gap-3 overflow-auto pb-2">
               {images.map((image, index) => (
@@ -870,17 +964,30 @@ function DetailPage() {
           )}
         </div>
 
+        {/* INFORMACIÓN Y ACCIONES */}
         <div>
-          <span className="rounded-lg bg-accent/20 px-2.5 py-1 text-[11px] font-bold uppercase tracking-widest text-primary">
-            {listing.category}
-          </span>
-          <h1 className="mt-4 text-2xl sm:text-4xl font-bold leading-tight tracking-tight text-primary">
+          <div className="flex items-center gap-2">
+            <span className="rounded-lg bg-accent/20 px-2.5 py-1 text-[11px] font-bold uppercase tracking-widest text-primary">
+              {listing.category}
+            </span>
+            {isSold && (
+              <span className="rounded-lg bg-destructive/15 px-2.5 py-1 text-[11px] font-bold uppercase tracking-widest text-destructive">
+                Vendido
+              </span>
+            )}
+          </div>
+
+          <h1 className="mt-4 text-2xl font-bold leading-tight tracking-tight text-primary sm:text-4xl">
             {listing.title}
           </h1>
-          <p className="mt-3 font-mono text-2xl font-bold text-primary">{formatPrice(listing.price)}</p>
+          <p className="mt-3 font-mono text-2xl font-bold text-primary">
+            {formatPrice(listing.price)}
+          </p>
 
-          <div className="mt-4 flex flex-wrap items-center gap-3 text-xs sm:text-sm text-muted-foreground">
-            <span className="rounded-lg bg-muted px-2.5 py-1 font-semibold text-primary">{listing.condition}</span>
+          <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground sm:text-sm">
+            <span className="rounded-lg bg-muted px-2.5 py-1 font-semibold text-primary">
+              {listing.condition}
+            </span>
             <span className="flex items-center gap-1">
               <MapPin size={15} />
               {listing.location}
@@ -890,42 +997,85 @@ function DetailPage() {
 
           <div className="my-6 border-t" />
           <h2 className="font-bold text-primary">Sobre este artículo</h2>
-          <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-muted-foreground">{listing.description}</p>
+          <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-muted-foreground">
+            {listing.description}
+          </p>
 
           <div className="my-6 border-t" />
           <div className="flex items-center gap-3">
-            <Avatar name={listing.seller.name} />
-            <div>
-              <p className="font-bold text-primary">{listing.seller.name}</p>
-              <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                <Star size={13} fill="currentColor" className="text-accent" />
-                {listing.seller.rating.toFixed(1)} · {listing.seller.verified ? 'Identidad verificada' : 'Vendedor del barrio'}
-              </p>
-            </div>
-            {listing.seller.verified && <ShieldCheck size={18} className="ml-auto text-secondary" />}
+            <Link
+              href={`/vendedor/${listing.seller.id}`}
+              className="group flex items-center gap-3 rounded-2xl border border-transparent p-2.5 -mx-2.5 transition hover:border-border hover:bg-muted/50"
+            >
+              <Avatar name={listing.seller.name} />
+              <div>
+                <p className="font-bold text-primary group-hover:text-secondary transition">
+                  {listing.seller.name}
+                </p>
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Star size={13} fill="currentColor" className="text-accent" />
+                  {listing.seller.rating.toFixed(1)} · Ver perfil y calificaciones →
+                </p>
+              </div>
+              {listing.seller.verified && <ShieldCheck size={18} className="ml-auto text-secondary" />}
+            </Link>
           </div>
 
+          {/* PANEL DE CONTROL SI ES EL DUEÑO */}
+          {isOwner && !isSold && (
+            <div className="mt-6 rounded-2xl border border-secondary/30 bg-secondary/10 p-4">
+              <p className="text-xs font-bold uppercase tracking-wider text-secondary">
+                Opciones de tu publicación
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                ¿Ya concretaste el trato? Márcalo como vendido para ocultarlo de las búsquedas.
+              </p>
+              <button
+                type="button"
+                disabled={updatingStatus}
+                onClick={handleMarkAsSold}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-bold text-primary-foreground transition hover:-translate-y-0.5 disabled:opacity-60"
+              >
+                {updatingStatus ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Check size={16} />
+                )}
+                Marcar como vendido
+              </button>
+            </div>
+          )}
+
+          {/* BOTONES DE CONTACTO PARA COMPRADORES */}
           <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-            <a
-              href={whatsappUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-secondary px-4 py-3.5 text-sm font-bold text-white transition hover:-translate-y-0.5"
-            >
-              <MessageCircle size={17} />
-              Contactar por WhatsApp
-            </a>
+            {isSold ? (
+              <div className="flex-1 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3.5 text-center text-sm font-bold text-destructive">
+                Este artículo ya fue vendido
+              </div>
+            ) : (
+              <a
+                href={whatsappUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-secondary px-4 py-3.5 text-sm font-bold text-white transition hover:-translate-y-0.5"
+              >
+                <MessageCircle size={17} />
+                Contactar por WhatsApp
+              </a>
+            )}
             <button
-              className="flex items-center justify-center gap-2 rounded-xl border px-4 py-3.5 text-sm font-bold text-primary hover:border-secondary transition"
+              className="flex items-center justify-center gap-2 rounded-xl border px-4 py-3.5 text-sm font-bold text-primary transition hover:border-secondary"
               onClick={() => navigator.clipboard?.writeText(window.location.href)}
             >
               <LinkIcon size={17} />
               Compartir
             </button>
           </div>
-          {whatsappDisplay && (
+
+          {!isSold && whatsappDisplay && (
             <p className="mt-2 text-center text-xs text-muted-foreground">
-              WhatsApp del vendedor: <span className="font-semibold text-primary">{whatsappDisplay}</span>
+              WhatsApp del vendedor:{' '}
+              <span className="font-semibold text-primary">{whatsappDisplay}</span>
             </p>
           )}
         </div>
@@ -940,7 +1090,6 @@ function PublishPage({ currentUser }: { currentUser: any }) {
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
 
-  // BLOQUEO DE SEGURIDAD PARA USUARIOS NO AUTENTICADOS
   if (!currentUser) {
     return (
       <div className="mx-auto max-w-md py-16 text-center animate-fade">
@@ -953,18 +1102,11 @@ function PublishPage({ currentUser }: { currentUser: any }) {
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
             Para proteger a los vecinos de Puerto Boyacá y asociar el aviso a tu perfil, necesitas ingresar a tu cuenta de REVO.
           </p>
-
           <div className="mt-7 flex flex-col gap-3">
-            <Link
-              href="/login"
-              className="flex w-full items-center justify-center rounded-xl bg-primary px-4 py-3.5 text-sm font-bold text-primary-foreground transition hover:-translate-y-0.5"
-            >
+            <Link href="/login" className="flex w-full items-center justify-center rounded-xl bg-primary px-4 py-3.5 text-sm font-bold text-primary-foreground transition hover:-translate-y-0.5">
               Ingresar a mi cuenta
             </Link>
-            <Link
-              href="/registro"
-              className="flex w-full items-center justify-center rounded-xl border border-primary/20 px-4 py-3 text-sm font-bold text-primary hover:bg-muted"
-            >
+            <Link href="/registro" className="flex w-full items-center justify-center rounded-xl border border-primary/20 px-4 py-3 text-sm font-bold text-primary hover:bg-muted">
               Crear cuenta gratis
             </Link>
           </div>
@@ -973,201 +1115,580 @@ function PublishPage({ currentUser }: { currentUser: any }) {
     );
   }
 
-  const [form, setForm] = useState({
-    title: '',
-    category: 'Hogar',
-    price: '',
-    description: '',
-    condition: 'Usado',
-    location: 'Centro',
-    image: '',
-    phone: '',
-  });
+  const [title, setTitle] = useState('');
+  const [category, setCategory] = useState('Motos');
+  const [price, setPrice] = useState('');
+  const [condition, setCondition] = useState('Usado');
+  const [location, setListingLocation] = useState('Centro');
+  const [description, setDescription] = useState('');
+  const [phone, setPhone] = useState('');
+  
+  // Estados para galería de imágenes
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
 
-  const create = useMutation({
-    mutationFn: (formData: any) => createListingInDb(formData, currentUser),
-    onSuccess: (newListing) => {
-      queryClient.invalidateQueries({ queryKey: ['listings'] });
-      setLocation(`/producto/${newListing.id}`);
-    },
-    onError: (err: any) => setError(`Error de Supabase: ${err.message}`),
-  });
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    const newFiles = Array.from(e.target.files);
+    const totalFiles = [...selectedFiles, ...newFiles].slice(0, 5); // Máximo 5 fotos
 
-  const update = (key: keyof typeof form, value: string) => setForm((c) => ({ ...c, [key]: value }));
+    setSelectedFiles(totalFiles);
+    const newPreviews = totalFiles.map((file) => URL.createObjectURL(file));
+    setPreviews(newPreviews);
+  };
 
-  const submit = (event: React.FormEvent) => {
+  const removeImage = (index: number) => {
+    const updatedFiles = selectedFiles.filter((_, i) => i !== index);
+    const updatedPreviews = previews.filter((_, i) => i !== index);
+    setSelectedFiles(updatedFiles);
+    setPreviews(updatedPreviews);
+  };
+
+  const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (form.phone.replace(/\D/g, '').length !== 10) {
-      setError('Ingresa un número celular colombiano de 10 dígitos.');
-      return;
-    }
-    if (form.description.length < 10) {
-      setError('Cuéntanos un poco más sobre el estado del artículo.');
-      return;
-    }
     setError('');
-    create.mutate(form);
+
+    if (selectedFiles.length === 0) {
+      setError('Por favor selecciona al menos una fotografía del producto.');
+      return;
+    }
+
+    setUploading(true);
+    try {
+      // 1. Subir imágenes a Supabase Storage
+      const uploadedUrls = await uploadListingImages(selectedFiles, currentUser.id);
+
+      // 2. Guardar anuncio en PostgreSQL usando los nombres reales de tus columnas (image y gallery)
+      const { error: insertError } = await supabase.from('listings').insert({
+        title,
+        category,
+        price: Number(price),
+        condition,
+        location,
+        description,
+        image: uploadedUrls[0],
+        gallery: uploadedUrls,
+        status: 'active',
+        seller_id: currentUser.id,
+        seller_name: currentUser.user_metadata?.name || currentUser.user_metadata?.full_name || 'Vecino REVO',
+        seller_rating: 5.0,
+        seller_verified: true,
+      });
+
+      if (insertError) throw insertError;
+
+      await queryClient.invalidateQueries({ queryKey: ['listings'] });
+      setLocation('/');
+    } catch (err: any) {
+      setError(err.message || 'Ocurrió un error al publicar el anuncio.');
+    } finally {
+      setUploading(false);
+    }
   };
 
   return (
-    <div className="mx-auto max-w-4xl py-7 sm:py-9 animate-fade">
-      <div className="mb-6 sm:mb-8">
-        <p className="text-xs sm:text-sm font-semibold text-secondary">Tu próximo intercambio</p>
-        <h1 className="mt-1 text-2xl sm:text-3xl font-bold tracking-tight text-primary">Publicar algo</h1>
-        <p className="mt-2 text-xs sm:text-sm text-muted-foreground">Es gratis, rápido y llega a personas cerca de ti.</p>
-      </div>
+    <div className="mx-auto max-w-4xl py-8">
+      <div className="rounded-3xl border bg-card p-6 shadow-soft sm:p-10">
+        <p className="text-xs font-bold uppercase tracking-widest text-secondary">Tu próximo intercambio</p>
+        <h1 className="mt-1 text-3xl font-bold text-primary">Publicar algo</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Es gratis, rápido y llega a personas cerca de ti.</p>
 
-      <form onSubmit={submit} className="grid gap-6 lg:grid-cols-[1fr_300px]">
-        <div className="rounded-3xl border bg-card p-5 sm:p-8">
-          <div className="grid gap-4 sm:gap-5 sm:grid-cols-2">
-            <label className="sm:col-span-2 text-xs sm:text-sm font-semibold text-primary">
-              Título del aviso
-              <input
-                required
-                minLength={3}
-                value={form.title}
-                onChange={(e) => update('title', e.target.value)}
-                placeholder="Ej. Bicicleta urbana casi nueva"
-                className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm outline-none focus:border-secondary"
-              />
+        <form onSubmit={submit} className="mt-8 space-y-6">
+          {/* SECCIÓN DE GALERÍA Y PREVISUALIZACIÓN */}
+          <div>
+            <label className="block text-sm font-semibold text-primary">
+              Fotografías del producto <span className="text-xs font-normal text-muted-foreground">(Máximo 5 fotos)</span>
             </label>
 
-            <label className="text-xs sm:text-sm font-semibold text-primary">
-              Categoría
-              <select
-                value={form.category}
-                onChange={(e) => update('category', e.target.value)}
-                className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm outline-none focus:border-secondary"
-              >
-                {categories.slice(1).map((item) => (
-                  <option key={item}>{item}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="text-xs sm:text-sm font-semibold text-primary">
-              Precio (COP)
-              <input
-                required
-                min="0"
-                type="number"
-                value={form.price}
-                onChange={(e) => update('price', e.target.value)}
-                placeholder="Ej. 450000"
-                className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm outline-none focus:border-secondary"
-              />
-            </label>
-
-            <label className="text-xs sm:text-sm font-semibold text-primary">
-              Estado
-              <select
-                value={form.condition}
-                onChange={(e) => update('condition', e.target.value)}
-                className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm outline-none focus:border-secondary"
-              >
-                <option>Usado</option>
-                <option>Nuevo</option>
-              </select>
-            </label>
-
-            <label className="text-xs sm:text-sm font-semibold text-primary">
-              Localidad
-              <select
-                value={form.location}
-                onChange={(e) => update('location', e.target.value)}
-                className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm outline-none focus:border-secondary"
-              >
-                {locations.slice(1).map((item) => (
-                  <option key={item}>{item}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="sm:col-span-2 text-xs sm:text-sm font-semibold text-primary">
-              Descripción
-              <textarea
-                required
-                minLength={10}
-                value={form.description}
-                onChange={(e) => update('description', e.target.value)}
-                rows={4}
-                placeholder="¿Qué incluye?, ¿qué detalles tiene?, ¿por qué lo vendes?"
-                className="mt-2 w-full resize-none rounded-xl border bg-background px-3.5 py-3 text-sm outline-none focus:border-secondary"
-              />
-            </label>
-
-            <label className="sm:col-span-2 text-xs sm:text-sm font-semibold text-primary">
-              Tu celular de WhatsApp
-              <div className="mt-2 flex overflow-hidden rounded-xl border bg-background focus-within:border-secondary">
-                <span className="flex items-center border-r bg-muted px-3 text-xs sm:text-sm font-semibold text-primary">
-                  +57
-                </span>
-                <input
-                  required
-                  autoComplete="tel"
-                  type="tel"
-                  maxLength={10}
-                  value={form.phone}
-                  onChange={(e) => update('phone', e.target.value.replace(/\D/g, '').slice(0, 10))}
-                  placeholder="300 123 4567"
-                  className="min-w-0 flex-1 px-3.5 py-3 text-sm outline-none"
-                />
+            <label className="mt-2 flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-primary/20 bg-background/50 p-6 transition hover:border-secondary hover:bg-muted/40">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-secondary/10 text-secondary">
+                <ImagePlus size={24} />
               </div>
-            </label>
-
-            <label className="sm:col-span-2 text-xs sm:text-sm font-semibold text-primary">
-              Foto del artículo (URL)
+              <p className="mt-3 text-sm font-semibold text-primary">Haz clic para seleccionar fotos desde tu dispositivo</p>
+              <p className="mt-1 text-xs text-muted-foreground">PNG, JPG o WEBP (La primera foto será la portada)</p>
               <input
-                type="url"
-                value={form.image}
-                onChange={(e) => update('image', e.target.value)}
-                placeholder="https://images.unsplash.com/..."
-                className="mt-2 w-full rounded-xl border bg-background px-3.5 py-3 text-sm outline-none focus:border-secondary"
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleFileChange}
+                className="hidden"
               />
             </label>
+
+            {/* GALERÍA DE VISTA PREVIA */}
+            {previews.length > 0 && (
+              <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
+                {previews.map((src, index) => (
+                  <div key={index} className="group relative aspect-square overflow-hidden rounded-xl border bg-muted">
+                    <img src={src} alt={`Vista previa ${index + 1}`} className="h-full w-full object-cover" />
+                    {index === 0 && (
+                      <span className="absolute bottom-1.5 left-1.5 rounded-md bg-primary/90 px-2 py-0.5 text-[10px] font-bold text-white">
+                        Portada
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => removeImage(index)}
+                      className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-destructive text-white opacity-90 shadow transition hover:scale-110"
+                      title="Quitar foto"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
-          {error && <p className="mt-4 rounded-xl bg-destructive/10 px-3 py-2 text-xs sm:text-sm text-destructive">{error}</p>}
+          {/* RESTO DE CAMPOS DEL FORMULARIO */}
+          <div>
+            <label className="block text-sm font-semibold text-primary">Título del aviso</label>
+            <input
+              required
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Ej. Yamaha XTZ 125 modelo 2022"
+              className="mt-2 w-full rounded-xl border bg-background px-4 py-3 text-sm text-primary outline-none focus:border-secondary"
+            />
+          </div>
 
-          <div className="mt-7 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="block text-sm font-semibold text-primary">Categoría</label>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="mt-2 w-full rounded-xl border bg-background px-4 py-3 text-sm text-primary outline-none focus:border-secondary"
+              >
+                <option value="Motos">Motos</option>
+                <option value="Celulares">Celulares</option>
+                <option value="Tecnología">Tecnología</option>
+                <option value="Hogar">Hogar</option>
+                <option value="Deporte">Deporte</option>
+                <option value="Moda">Moda</option>
+                <option value="Otros">Otros</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-primary">Precio (COP)</label>
+              <input
+                required
+                type="number"
+                min={0}
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
+                placeholder="Ej. 450000"
+                className="mt-2 w-full rounded-xl border bg-background px-4 py-3 text-sm text-primary outline-none focus:border-secondary"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-primary">Estado</label>
+              <select
+                value={condition}
+                onChange={(e) => setCondition(e.target.value)}
+                className="mt-2 w-full rounded-xl border bg-background px-4 py-3 text-sm text-primary outline-none focus:border-secondary"
+              >
+                <option value="Usado">Usado</option>
+                <option value="Nuevo">Nuevo</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-primary">Localidad (Puerto Boyacá)</label>
+              <select
+                value={location}
+                onChange={(e) => setListingLocation(e.target.value)}
+                className="mt-2 w-full rounded-xl border bg-background px-4 py-3 text-sm text-primary outline-none focus:border-secondary"
+              >
+                <option value="Centro">Centro</option>
+                <option value="Pueblo Nuevo">Pueblo Nuevo</option>
+                <option value="El Carmen">El Carmen</option>
+                <option value="San Antonio">San Antonio</option>
+                <option value="2 y Medio">2 y Medio</option>
+                <option value="Puerto Romero">Puerto Romero</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-primary">Descripción</label>
+            <textarea
+              required
+              rows={4}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Describe el estado del producto, accesorios incluidos o detalles importantes..."
+              className="mt-2 w-full rounded-xl border bg-background px-4 py-3 text-sm text-primary outline-none focus:border-secondary"
+            />
+          </div>
+
+          {error && (
+            <p className="rounded-xl bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">{error}</p>
+          )}
+
+          <button
+            type="submit"
+            disabled={uploading}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-6 py-4 text-sm font-bold text-primary-foreground transition hover:-translate-y-0.5 disabled:opacity-60"
+          >
+            {uploading ? (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                Subiendo fotos y publicando...
+              </>
+            ) : (
+              'Publicar anuncio ahora'
+            )}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// Perfil del usuario
+
+function SellerProfilePage({ currentUser }: { currentUser?: any }) {
+  const { sellerId = '' } = useParams<{ sellerId: string }>();
+  const queryClient = useQueryClient();
+
+  const [reviewerName, setReviewerName] = useState('');
+  const [rating, setRating] = useState(5);
+  const [comment, setComment] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [reviewSuccess, setReviewSuccess] = useState(false);
+
+  const isOwnProfile = currentUser?.id === sellerId;
+
+  const { data: sellerListings = [], isLoading: loadingListings, refetch: refetchListings } = useQuery({
+    queryKey: ['seller-listings', sellerId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('listings')
+        .select('*')
+        .eq('seller_id', sellerId)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return (data || []).map((row: any) => ({
+        id: String(row.id),
+        title: row.title,
+        category: row.category || 'Otros',
+        price: Number(row.price),
+        description: row.description,
+        condition: row.condition || 'Usado',
+        location: row.location || 'Puerto Boyacá',
+        image: row.image,
+        createdAt: row.created_at,
+        status: row.status,
+        seller: {
+          id: row.seller_id,
+          name: row.seller_name || 'Vecino REVO',
+          rating: Number(row.seller_rating || 5.0),
+          verified: Boolean(row.seller_verified),
+          phone: row.seller_phone || null,
+        },
+      }));
+    },
+    enabled: Boolean(sellerId),
+  });
+
+  const { data: reviews = [], refetch: refetchReviews } = useQuery({
+    queryKey: ['seller-reviews', sellerId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('seller_reviews')
+        .select('*')
+        .eq('seller_id', sellerId)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: Boolean(sellerId),
+  });
+
+  const defaultName = isOwnProfile
+    ? currentUser?.user_metadata?.name || currentUser?.user_metadata?.full_name || currentUser?.email?.split('@')[0]
+    : reviews[0]?.seller_name || 'Vendedor de Puerto Boyacá';
+
+  const sellerInfo = sellerListings[0]?.seller || {
+    id: sellerId,
+    name: defaultName || 'Vecino REVO',
+    rating: 5.0,
+    verified: true,
+  };
+
+  const averageRating =
+    reviews.length > 0
+      ? (reviews.reduce((acc: number, r: any) => acc + r.rating, 0) / reviews.length).toFixed(1)
+      : sellerInfo.rating.toFixed(1);
+
+  const activeListings = sellerListings.filter((item) => item.status === 'active');
+  const soldListings = sellerListings.filter((item) => item.status === 'sold');
+
+  const toggleListingStatus = async (listingId: string, newStatus: 'active' | 'sold') => {
+    const { error } = await supabase
+      .from('listings')
+      .update({ status: newStatus })
+      .eq('id', listingId);
+
+    if (!error) {
+      await refetchListings();
+      await queryClient.invalidateQueries({ queryKey: ['listings'] });
+    }
+  };
+
+  const handleReviewSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      const { error } = await supabase.from('seller_reviews').insert({
+        seller_id: sellerId,
+        seller_name: sellerInfo.name,
+        reviewer_name: reviewerName.trim() || 'Vecino de Puerto Boyacá',
+        rating,
+        comment: comment.trim(),
+      });
+      if (error) throw error;
+
+      setReviewerName('');
+      setComment('');
+      setRating(5);
+      setReviewSuccess(true);
+      await refetchReviews();
+      await queryClient.invalidateQueries({ queryKey: ['listings'] });
+      setTimeout(() => setReviewSuccess(false), 4000);
+    } catch (err) {
+      console.error('Error al guardar reseña:', err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loadingListings) return <LoadingBlocks count={4} />;
+
+  return (
+    <div className="py-8 animate-fade">
+      {/* CABECERA DEL PERFIL */}
+      <div className="rounded-3xl border bg-card p-6 shadow-soft sm:p-8">
+        <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-4">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary text-xl font-bold text-white">
+              {initials(sellerInfo.name)}
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-2xl font-bold text-primary sm:text-3xl">{sellerInfo.name}</h1>
+                {isOwnProfile && (
+                  <span className="rounded-full bg-accent/25 px-2.5 py-0.5 text-xs font-bold text-primary">
+                    Tu perfil
+                  </span>
+                )}
+                {sellerInfo.verified && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-secondary/15 px-2.5 py-0.5 text-xs font-bold text-secondary">
+                    <ShieldCheck size={14} /> Confiable
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+                <span className="flex items-center gap-1 font-bold text-primary">
+                  <Star size={16} fill="currentColor" className="text-accent" />
+                  {averageRating} ({reviews.length} {reviews.length === 1 ? 'opinión' : 'opiniones'})
+                </span>
+                <span>•</span>
+                <span>{soldListings.length} ventas concretadas</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {isOwnProfile && (
+              <Link
+                href="/publicar"
+                className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-sm font-bold text-primary"
+              >
+                <Plus size={16} />
+                Nuevo aviso
+              </Link>
+            )}
             <Link
-              href="/"
-              className="rounded-xl border px-5 py-3 text-center text-sm font-bold text-primary hover:bg-muted"
+              href="/buscar"
+              className="rounded-xl border px-4 py-2.5 text-sm font-semibold text-primary hover:bg-muted"
             >
-              Cancelar
+              ← Volver al catálogo
             </Link>
-            <button
-              disabled={create.isPending}
-              className="flex items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-bold text-primary-foreground transition hover:-translate-y-0.5 disabled:opacity-60"
-            >
-              {create.isPending && <Loader2 size={17} className="animate-spin" />}
-              Publicar aviso
-            </button>
           </div>
         </div>
+      </div>
 
-        <aside className="h-fit rounded-3xl bg-primary p-6 text-primary-foreground">
-          <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-accent text-primary">
-            <ImagePlus size={21} />
+      {/* PUBLICACIONES ACTIVAS */}
+      <section className="mt-10">
+        <h2 className="text-xl font-bold text-primary">
+          {isOwnProfile ? `Tus publicaciones activas (${activeListings.length})` : `En venta actualmente (${activeListings.length})`}
+        </h2>
+        {activeListings.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {isOwnProfile
+              ? 'Aún no tienes artículos activos. ¡Publica tu primer aviso gratis!'
+              : 'Este vendedor no tiene artículos activos en este momento.'}
+          </p>
+        ) : (
+          <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            {activeListings.map((listing) => (
+              <div key={listing.id} className="flex flex-col gap-2">
+                <ListingCard listing={listing} />
+                {isOwnProfile && (
+                  <button
+                    onClick={() => toggleListingStatus(listing.id, 'sold')}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-secondary/40 bg-secondary/10 py-2 text-xs font-bold text-secondary transition hover:bg-secondary hover:text-white"
+                  >
+                    <Check size={14} /> Marcar como vendido
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
-          <h2 className="text-xl font-bold">Un buen aviso se mueve rápido</h2>
-          <ul className="mt-5 space-y-3 text-xs sm:text-sm text-white/75">
-            <li className="flex gap-2">
-              <Check size={16} className="mt-0.5 shrink-0 text-accent" />
-              Usa un título simple y directo.
-            </li>
-            <li className="flex gap-2">
-              <Check size={16} className="mt-0.5 shrink-0 text-accent" />
-              Cuenta la verdad sobre el estado.
-            </li>
-            <li className="flex gap-2">
-              <Check size={16} className="mt-0.5 shrink-0 text-accent" />
-              Coordina encuentros en sitios públicos.
-            </li>
-          </ul>
-        </aside>
-      </form>
+        )}
+      </section>
+
+      {/* HISTORIAL DE VENDIDOS (VISIBLE PARA EL DUEÑO) */}
+      {isOwnProfile && soldListings.length > 0 && (
+        <section className="mt-12">
+          <h2 className="text-xl font-bold text-primary">
+            Artículos vendidos ({soldListings.length})
+          </h2>
+          <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            {soldListings.map((listing) => (
+              <div key={listing.id} className="flex flex-col gap-2 opacity-80">
+                <ListingCard listing={listing} />
+                <button
+                  onClick={() => toggleListingStatus(listing.id, 'active')}
+                  className="w-full rounded-xl border py-2 text-xs font-semibold text-muted-foreground hover:bg-muted hover:text-primary"
+                >
+                  Volver a publicar como disponible
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* REPUTACIÓN Y CALIFICACIÓN ABIERTA */}
+      <section className={`mt-14 grid gap-8 ${isOwnProfile ? 'grid-cols-1' : 'lg:grid-cols-[1fr_1.2fr]'}`}>
+        {!isOwnProfile && (
+          <div className="h-fit rounded-3xl border bg-card p-6 shadow-soft">
+            <h3 className="text-lg font-bold text-primary">Calificar a este vendedor</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              ¿Ya hiciste trato con {sellerInfo.name}? Cuéntale a la comunidad si es confiable. No necesitas cuenta para opinar.
+            </p>
+
+            <form onSubmit={handleReviewSubmit} className="mt-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                  Puntuación
+                </label>
+                <div className="mt-2 flex gap-2">
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      onClick={() => setRating(star)}
+                      className={`rounded-xl border p-2.5 transition ${
+                        rating >= star
+                          ? 'border-accent bg-accent/15 text-accent'
+                          : 'border-border text-muted-foreground hover:bg-muted'
+                      }`}
+                    >
+                      <Star size={20} fill={rating >= star ? 'currentColor' : 'none'} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-primary">
+                  Tu nombre (opcional)
+                </label>
+                <input
+                  value={reviewerName}
+                  onChange={(e) => setReviewerName(e.target.value)}
+                  placeholder="Ej. Carlos (o déjalo vacío para Anónimo)"
+                  className="mt-1.5 w-full rounded-xl border bg-background px-3.5 py-2.5 text-sm outline-none focus:border-secondary"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-primary">
+                  Comentario sobre el trato
+                </label>
+                <textarea
+                  required
+                  rows={3}
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="Ej. Muy cumplido, el producto estaba tal como en las fotos..."
+                  className="mt-1.5 w-full rounded-xl border bg-background px-3.5 py-2.5 text-sm outline-none focus:border-secondary"
+                />
+              </div>
+
+              {reviewSuccess && (
+                <p className="rounded-xl bg-emerald-500/15 px-3 py-2 text-xs font-bold text-emerald-700">
+                  ¡Gracias! Tu calificación ya es visible para todos los vecinos.
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-bold text-primary-foreground transition hover:-translate-y-0.5 disabled:opacity-60"
+              >
+                {submitting && <Loader2 size={16} className="animate-spin" />}
+                Publicar calificación
+              </button>
+            </form>
+          </div>
+        )}
+
+        <div className="space-y-4">
+          <h3 className="text-lg font-bold text-primary">
+            {isOwnProfile
+              ? `Opiniones que has recibido (${reviews.length})`
+              : `Opiniones de otros vecinos (${reviews.length})`}
+          </h3>
+
+          {reviews.length === 0 ? (
+            <div className="rounded-2xl border border-dashed bg-card p-8 text-center text-sm text-muted-foreground">
+              {isOwnProfile
+                ? 'Aún no has recibido calificaciones de compradores.'
+                : 'Aún no hay calificaciones para este vendedor. ¡Sé el primero en dejar tu opinión!'}
+            </div>
+          ) : (
+            reviews.map((rev: any) => (
+              <div key={rev.id} className="rounded-2xl border bg-card p-5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <Avatar name={rev.reviewer_name} small />
+                    <div>
+                      <p className="text-sm font-bold text-primary">{rev.reviewer_name}</p>
+                      <p className="text-[11px] text-muted-foreground">{formatDate(rev.created_at)}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 rounded-lg bg-accent/15 px-2.5 py-1 text-xs font-bold text-primary">
+                    <Star size={13} fill="currentColor" className="text-accent" />
+                    {rev.rating}.0
+                  </div>
+                </div>
+                {rev.comment && (
+                  <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{rev.comment}</p>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </section>
     </div>
   );
 }
@@ -1383,7 +1904,12 @@ function Router() {
       <Switch>
         <Route path="/" component={Home} />
         <Route path="/buscar" component={SearchPage} />
-        <Route path="/producto/:id" component={DetailPage} />
+        <Route path="/producto/:id">
+          <DetailPage currentUser={currentUser} />
+        </Route>
+        <Route path="/vendedor/:sellerId">
+          <SellerProfilePage currentUser={currentUser} />
+        </Route>
         <Route path="/publicar">
           <PublishPage currentUser={currentUser} />
         </Route>
